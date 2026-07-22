@@ -19,7 +19,9 @@ self.addEventListener('push', (event) => {
     body: data.body || '',
     icon: '/icon-192.png',
     badge: '/icon-192.png',
-    vibrate: [100, 50, 100]
+    vibrate: [100, 50, 100],
+    tag: data.tag || 'fx-alert',   // 같은 tag는 새 알림이 이전 알림을 대체 (최신 것만 남음)
+    renotify: true                  // 대체될 때도 진동/알림음이 다시 울리게
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

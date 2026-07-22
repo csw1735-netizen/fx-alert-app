@@ -119,8 +119,18 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
+// 이 기기의 구독 endpoint = "내 identity". 설정은 이 값 기준으로 서버에 저장/조회된다.
+function getMyEndpoint(){
+  return localStorage.getItem('fxPushEndpoint');
+}
+function setMyEndpoint(endpoint){
+  localStorage.setItem('fxPushEndpoint', endpoint);
+}
+
 async function loadSettings(){
-  const res = await fetch('/api/settings');
+  const endpoint = getMyEndpoint();
+  if (!endpoint) return; // 아직 구독 전이면 기본값(폼의 초기값) 그대로 둔다
+  const res = await fetch('/api/settings?endpoint=' + encodeURIComponent(endpoint));
   const s = await res.json();
   unitSelect.value = s.unit || 'percent';
   thresholdInput.value = (s.threshold !== undefined) ? s.threshold : 0.5;
@@ -128,16 +138,25 @@ async function loadSettings(){
   fiveMinCheck.checked = !!s.fiveMin;
 }
 
+function currentFormSettings(){
+  return {
+    unit: unitSelect.value,
+    threshold: parseFloat(thresholdInput.value) || 0,
+    hourly: hourlyCheck.checked,
+    fiveMin: fiveMinCheck.checked
+  };
+}
+
 async function saveSettings(){
+  const endpoint = getMyEndpoint();
+  if (!endpoint) {
+    setStatus('설정을 저장하려면 먼저 "폰 알림 켜기"를 눌러야 해요.', 'err');
+    return;
+  }
   await fetch('/api/settings', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      unit: unitSelect.value,
-      threshold: parseFloat(thresholdInput.value) || 0,
-      hourly: hourlyCheck.checked,
-      fiveMin: fiveMinCheck.checked
-    })
+    body: JSON.stringify({ endpoint, ...currentFormSettings() })
   });
 }
 [unitSelect, thresholdInput, hourlyCheck, fiveMinCheck].forEach(el => el.addEventListener('change', saveSettings));
@@ -182,18 +201,29 @@ async function registerServiceWorkerAndSubscribe(){
     });
   }
 
+  // 지금 폼에 입력된 값을 "내 설정"으로 함께 등록 -> 사람마다 다른 설정이 유지됨
   await fetch('/api/subscribe', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(sub)
+    body: JSON.stringify({ subscription: sub, settings: currentFormSettings() })
   });
+  setMyEndpoint(sub.endpoint);
 
-  setStatus('알림 켜짐 ✅ 이 기기로 푸시를 받습니다.', 'ok');
+  setStatus('알림 켜짐 ✅ 이 기기로, 지금 설정한 기준으로 푸시를 받습니다.', 'ok');
 }
 
 subscribeBtn.addEventListener('click', registerServiceWorkerAndSubscribe);
 testBtn.addEventListener('click', async () => {
-  await fetch('/api/test-notify', { method:'POST' });
+  const endpoint = getMyEndpoint();
+  if (!endpoint) {
+    setStatus('먼저 "폰 알림 켜기"를 눌러주세요.', 'err');
+    return;
+  }
+  await fetch('/api/test-notify', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ endpoint })
+  });
   setStatus('테스트 알림을 전송했습니다. 잠시 후 확인해보세요.', 'ok');
 });
 
