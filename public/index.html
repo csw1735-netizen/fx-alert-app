@@ -3,14 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>환율 알림</title>
-<link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#4f8cff">
-<link rel="apple-touch-icon" href="/icon-192.png">
+<title>환율 알림 (텔레그램)</title>
 <style>
   :root{
     --bg:#0f1115; --card:#1a1d24; --border:#2a2e38; --text:#eef0f3;
-    --muted:#8b93a1; --accent:#4f8cff; --up:#ef5350; --down:#3b82f6; --flat:#8b93a1;
+    --muted:#8b93a1; --accent:#2aabee; --up:#ef5350; --down:#3b82f6; --flat:#8b93a1;
   }
   *{box-sizing:border-box;}
   body{
@@ -30,7 +27,12 @@
   .row{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
   .row:last-child{margin-bottom:0;}
   label{font-size:13px; color:var(--muted); display:flex; align-items:center; gap:6px;}
-  input[type=number]{width:90px; background:#11141a; border:1px solid var(--border); color:var(--text); padding:7px 10px; border-radius:8px; font-size:14px;}
+  input[type=number], input[type=text]{
+    background:#11141a; border:1px solid var(--border); color:var(--text);
+    padding:7px 10px; border-radius:8px; font-size:14px;
+  }
+  input[type=number]{width:90px;}
+  input[type=text]{width:180px;}
   select{background:#11141a; border:1px solid var(--border); color:var(--text); padding:7px 10px; border-radius:8px; font-size:14px;}
   input[type=checkbox]{width:16px; height:16px; accent-color:var(--accent);}
   button{background:var(--accent); color:#fff; border:none; padding:9px 16px; border-radius:8px; font-size:13px; cursor:pointer; font-weight:600;}
@@ -39,13 +41,16 @@
   .status{font-size:12px; color:var(--muted); margin-top:10px;}
   .status.ok{color:#4caf50;}
   .status.err{color:#ef5350;}
+  .steps{font-size:13px; color:var(--muted); line-height:1.7;}
+  .steps b{color:var(--text);}
+  a{color:var(--accent);}
   .footer{text-align:center; color:var(--muted); font-size:11px; margin-top:20px;}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>💱 환율 알림</h1>
-  <div class="sub">원/달러, 원/엔 환율 · 서버 Web Push · 앱이 꺼져 있어도 알림 수신</div>
+  <h1>💱 환율 알림 (텔레그램)</h1>
+  <div class="sub">원/달러, 원/엔 환율 · 텔레그램으로 알림 전송 · 배터리 최적화 영향 없음</div>
 
   <div class="cards">
     <div class="card">
@@ -59,7 +64,24 @@
   </div>
 
   <div class="panel">
-    <h2>⚙️ 변동 알림 기준</h2>
+    <h2>1️⃣ 텔레그램 연동</h2>
+    <div class="steps">
+      1. 텔레그램에서 이 봇을 검색해 대화 시작: <b id="botHint">배포자가 알려준 봇 이름</b><br>
+      2. 봇에게아무 메시지나 하나 보내기 (예: "시작")<br>
+      3. 아래 안내(README)에 있는 방법으로 내 <b>Chat ID</b> 확인 후 입력<br>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <label>내 Chat ID
+        <input type="text" id="chatIdInput" placeholder="예: 123456789">
+      </label>
+      <button id="registerBtn">연동/저장</button>
+      <button class="secondary" id="testBtn">테스트 메시지 보내기</button>
+    </div>
+    <div class="status" id="statusLine">아직 연동 안 됨</div>
+  </div>
+
+  <div class="panel">
+    <h2>2️⃣ 변동 알림 기준</h2>
     <div class="row">
       <label>기준 단위
         <select id="unitSelect">
@@ -75,23 +97,14 @@
   </div>
 
   <div class="panel">
-    <h2>⏰ 정기 알림</h2>
+    <h2>3️⃣ 정기 알림</h2>
     <div class="row">
       <label><input type="checkbox" id="hourlyCheck"> 매시 정각 알림</label>
       <label><input type="checkbox" id="fiveMinCheck"> 5분 단위 알림</label>
     </div>
   </div>
 
-  <div class="panel">
-    <h2>🔔 알림 설정</h2>
-    <div class="row">
-      <button id="subscribeBtn">폰 알림 켜기</button>
-      <button class="secondary" id="testBtn">테스트 알림 보내기</button>
-    </div>
-    <div class="status" id="statusLine">알림 상태: 확인 전</div>
-  </div>
-
-  <div class="footer">홈 화면에 추가하면 앱처럼 사용할 수 있어요. 알림은 이 기기가 인터넷에 연결되어 있으면 앱이 꺼져 있어도 수신됩니다.</div>
+  <div class="footer">설정은 이 브라우저에 저장된 Chat ID 기준으로 서버에 저장됩니다. 사람마다 Chat ID가 다르므로 각자 원하는 기준으로 따로 설정할 수 있어요.</div>
 </div>
 
 <script>
@@ -102,7 +115,8 @@ const unitSelect = document.getElementById('unitSelect');
 const thresholdInput = document.getElementById('thresholdInput');
 const hourlyCheck = document.getElementById('hourlyCheck');
 const fiveMinCheck = document.getElementById('fiveMinCheck');
-const subscribeBtn = document.getElementById('subscribeBtn');
+const chatIdInput = document.getElementById('chatIdInput');
+const registerBtn = document.getElementById('registerBtn');
 const testBtn = document.getElementById('testBtn');
 
 function setStatus(msg, cls){
@@ -110,32 +124,11 @@ function setStatus(msg, cls){
   statusLine.className = 'status ' + (cls || '');
 }
 
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - base64String.length % 4) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
-  return outputArray;
+function getMyChatId(){
+  return localStorage.getItem('fxTelegramChatId');
 }
-
-// 이 기기의 구독 endpoint = "내 identity". 설정은 이 값 기준으로 서버에 저장/조회된다.
-function getMyEndpoint(){
-  return localStorage.getItem('fxPushEndpoint');
-}
-function setMyEndpoint(endpoint){
-  localStorage.setItem('fxPushEndpoint', endpoint);
-}
-
-async function loadSettings(){
-  const endpoint = getMyEndpoint();
-  if (!endpoint) return; // 아직 구독 전이면 기본값(폼의 초기값) 그대로 둔다
-  const res = await fetch('/api/settings?endpoint=' + encodeURIComponent(endpoint));
-  const s = await res.json();
-  unitSelect.value = s.unit || 'percent';
-  thresholdInput.value = (s.threshold !== undefined) ? s.threshold : 0.5;
-  hourlyCheck.checked = !!s.hourly;
-  fiveMinCheck.checked = !!s.fiveMin;
+function setMyChatId(id){
+  localStorage.setItem('fxTelegramChatId', id);
 }
 
 function currentFormSettings(){
@@ -147,19 +140,62 @@ function currentFormSettings(){
   };
 }
 
+async function loadSettings(){
+  const chatId = getMyChatId();
+  if (!chatId) return;
+  chatIdInput.value = chatId;
+  const res = await fetch('/api/settings?chatId=' + encodeURIComponent(chatId));
+  const s = await res.json();
+  unitSelect.value = s.unit || 'percent';
+  thresholdInput.value = (s.threshold !== undefined) ? s.threshold : 0.5;
+  hourlyCheck.checked = !!s.hourly;
+  fiveMinCheck.checked = !!s.fiveMin;
+  setStatus('연동됨 ✅ (Chat ID: ' + chatId + ')', 'ok');
+}
+
 async function saveSettings(){
-  const endpoint = getMyEndpoint();
-  if (!endpoint) {
-    setStatus('설정을 저장하려면 먼저 "폰 알림 켜기"를 눌러야 해요.', 'err');
-    return;
-  }
+  const chatId = getMyChatId();
+  if (!chatId) return;
   await fetch('/api/settings', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ endpoint, ...currentFormSettings() })
+    body: JSON.stringify({ chatId, ...currentFormSettings() })
   });
 }
 [unitSelect, thresholdInput, hourlyCheck, fiveMinCheck].forEach(el => el.addEventListener('change', saveSettings));
+
+registerBtn.addEventListener('click', async () => {
+  const chatId = chatIdInput.value.trim();
+  if (!chatId) {
+    setStatus('Chat ID를 입력해주세요.', 'err');
+    return;
+  }
+  await fetch('/api/register', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ chatId, settings: currentFormSettings() })
+  });
+  setMyChatId(chatId);
+  setStatus('연동 완료 ✅ 텔레그램으로 알림을 받습니다.', 'ok');
+});
+
+testBtn.addEventListener('click', async () => {
+  const chatId = getMyChatId();
+  if (!chatId) {
+    setStatus('먼저 연동/저장을 눌러주세요.', 'err');
+    return;
+  }
+  const res = await fetch('/api/test-notify', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ chatId })
+  });
+  if (res.ok) {
+    setStatus('테스트 메시지를 전송했습니다. 텔레그램을 확인해보세요.', 'ok');
+  } else {
+    setStatus('전송 실패. Chat ID가 맞는지 확인해주세요.', 'err');
+  }
+});
 
 async function loadRates(){
   try{
@@ -173,73 +209,10 @@ async function loadRates(){
   }
 }
 
-async function registerServiceWorkerAndSubscribe(){
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    setStatus('이 브라우저는 푸시 알림을 지원하지 않습니다.', 'err');
-    return;
-  }
-  const permission = await Notification.requestPermission();
-  if (permission !== 'granted') {
-    setStatus('알림 권한이 거부되었습니다.', 'err');
-    return;
-  }
-  const reg = await navigator.serviceWorker.register('/sw.js');
-  await navigator.serviceWorker.ready;
-
-  const keyRes = await fetch('/api/vapid-public-key');
-  const { publicKey } = await keyRes.json();
-  if (!publicKey) {
-    setStatus('서버에 VAPID 키가 설정되지 않았습니다. 배포 환경변수를 확인하세요.', 'err');
-    return;
-  }
-
-  let sub = await reg.pushManager.getSubscription();
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(publicKey)
-    });
-  }
-
-  // 지금 폼에 입력된 값을 "내 설정"으로 함께 등록 -> 사람마다 다른 설정이 유지됨
-  await fetch('/api/subscribe', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ subscription: sub, settings: currentFormSettings() })
-  });
-  setMyEndpoint(sub.endpoint);
-
-  setStatus('알림 켜짐 ✅ 이 기기로, 지금 설정한 기준으로 푸시를 받습니다.', 'ok');
-}
-
-subscribeBtn.addEventListener('click', registerServiceWorkerAndSubscribe);
-testBtn.addEventListener('click', async () => {
-  const endpoint = getMyEndpoint();
-  if (!endpoint) {
-    setStatus('먼저 "폰 알림 켜기"를 눌러주세요.', 'err');
-    return;
-  }
-  await fetch('/api/test-notify', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ endpoint })
-  });
-  setStatus('테스트 알림을 전송했습니다. 잠시 후 확인해보세요.', 'ok');
-});
-
 // init
 loadSettings();
 loadRates();
 setInterval(loadRates, 60 * 1000);
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(()=>{});
-}
-if ('Notification' in window && Notification.permission === 'granted') {
-  setStatus('알림 권한: 허용됨 ✅', 'ok');
-} else {
-  setStatus('알림 상태: "폰 알림 켜기" 버튼을 눌러주세요.');
-}
 </script>
 </body>
 </html>
