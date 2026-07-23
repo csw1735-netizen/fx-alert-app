@@ -101,10 +101,10 @@ app.post('/api/unregister', (req, res) => {
 // ---- API: 개인 설정 조회/저장 (chatId 기준) ----
 app.get('/api/settings', (req, res) => {
   const { chatId } = req.query;
-  if (!chatId) return res.json(DEFAULT_SETTINGS);
+  if (!chatId) return res.json({ ...DEFAULT_SETTINGS, registered: false });
   const subs = readSubs();
   const sub = findSub(subs, chatId);
-  res.json(sub ? sub.settings : DEFAULT_SETTINGS);
+  res.json(sub ? { ...sub.settings, registered: true } : { ...DEFAULT_SETTINGS, registered: false });
 });
 
 app.post('/api/settings', (req, res) => {
@@ -122,15 +122,61 @@ app.post('/api/settings', (req, res) => {
 let baselineUsd = null;
 let baselineJpy = null;
 
-async function fetchRates() {
+// 네이버 검색 "환율" 계산기 위젯이 쓰는 API. 비공식이지만 오래되고 안정적으로 쓰여온 엔드포인트라
+// 무료 환율 API(하루 1회 갱신)보다 훨씬 자주 갱신된 값을 준다. 실패하면 fallback으로 전환.
+function naverRateUrl(code, amount) {
+  return `https://m.search.naver.com/p/csearch/content/qapirender.nhn?key=calculator&pkid=141` +
+    `&q=${encodeURIComponent('환율')}&where=m&u1=keb&u6=standardUnit&u7=0&u3=${code}&u4=KRW&u8=down&u2=${amount}`;
+}
+
+function parseNaverValue(json) {
+  const raw = json && json.country && json.country[1] && json.country[1].value;
+  if (raw === undefined || raw === null) throw new Error('unexpected naver response shape');
+  const num = parseFloat(String(raw).replace(/,/g, ''));
+  if (!isFinite(num)) throw new Error('naver value parse failed');
+  return num;
+}
+
+const NAVER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  'Referer': 'https://m.search.naver.com/'
+};
+
+async function fetchFromNaver() {
+  const [usdRes, jpyRes] = await Promise.all([
+    fetch(naverRateUrl('USD', 1), { headers: NAVER_HEADERS }),
+    fetch(naverRateUrl('JPY', 100), { headers: NAVER_HEADERS })
+  ]);
+  const [usdJson, jpyJson] = await Promise.all([usdRes.json(), jpyRes.json()]);
+  return {
+    usdToKrw: parseNaverValue(usdJson),
+    jpyToKrw: parseNaverValue(jpyJson),
+    source: 'naver'
+  };
+}
+
+async function fetchFromFallback() {
   const res = await fetch('https://open.er-api.com/v6/latest/USD');
   const data = await res.json();
   if (data.result !== 'success') throw new Error('rate api error');
   const krw = data.rates.KRW;
   const jpy = data.rates.JPY;
-  const usdToKrw = krw;
-  const jpyToKrw = (krw / jpy) * 100;
-  return { usdToKrw, jpyToKrw };
+  return {
+    usdToKrw: krw,
+    jpyToKrw: (krw / jpy) * 100,
+    lastUpdateUtc: data.time_last_update_utc || null,
+    nextUpdateUtc: data.time_next_update_utc || null,
+    source: 'fallback'
+  };
+}
+
+async function fetchRates() {
+  try {
+    return await fetchFromNaver();
+  } catch (err) {
+    console.warn('네이버 환율 조회 실패, 대체 API로 전환:', err.message);
+    return await fetchFromFallback();
+  }
 }
 
 // ---- 변동 알림 체크 (구독자별 임계값 적용) ----

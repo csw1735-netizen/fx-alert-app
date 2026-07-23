@@ -64,17 +64,25 @@
   </div>
 
   <div class="panel">
+    <div class="row" style="justify-content:space-between;">
+      <div class="status" id="rateInfo" style="margin-top:0;">마지막 갱신 확인 중...</div>
+      <button class="secondary" id="refreshBtn">🔄 새로고침</button>
+    </div>
+  </div>
+
+  <div class="panel">
     <h2>1️⃣ 텔레그램 연동</h2>
     <div class="steps">
       1. 텔레그램에서 이 봇을 검색해 대화 시작: <b id="botHint">배포자가 알려준 봇 이름</b><br>
       2. 봇에게아무 메시지나 하나 보내기 (예: "시작")<br>
       3. 아래 안내(README)에 있는 방법으로 내 <b>Chat ID</b> 확인 후 입력<br>
+      4. 이미 다른 기기에서 연동한 적 있는 Chat ID라면, 같은 값을 입력하고 버튼을 누르면 그 설정을 그대로 불러옵니다.<br>
     </div>
     <div class="row" style="margin-top:10px;">
       <label>내 Chat ID
         <input type="text" id="chatIdInput" placeholder="예: 123456789">
       </label>
-      <button id="registerBtn">연동/저장</button>
+      <button id="registerBtn">연동/불러오기</button>
       <button class="secondary" id="testBtn">테스트 메시지 보내기</button>
     </div>
     <div class="status" id="statusLine">아직 연동 안 됨</div>
@@ -118,6 +126,8 @@ const fiveMinCheck = document.getElementById('fiveMinCheck');
 const chatIdInput = document.getElementById('chatIdInput');
 const registerBtn = document.getElementById('registerBtn');
 const testBtn = document.getElementById('testBtn');
+const refreshBtn = document.getElementById('refreshBtn');
+const rateInfo = document.getElementById('rateInfo');
 
 function setStatus(msg, cls){
   statusLine.textContent = msg;
@@ -140,16 +150,20 @@ function currentFormSettings(){
   };
 }
 
+function applySettingsToForm(s){
+  unitSelect.value = s.unit || 'percent';
+  thresholdInput.value = (s.threshold !== undefined) ? s.threshold : 0.5;
+  hourlyCheck.checked = !!s.hourly;
+  fiveMinCheck.checked = !!s.fiveMin;
+}
+
 async function loadSettings(){
   const chatId = getMyChatId();
   if (!chatId) return;
   chatIdInput.value = chatId;
   const res = await fetch('/api/settings?chatId=' + encodeURIComponent(chatId));
   const s = await res.json();
-  unitSelect.value = s.unit || 'percent';
-  thresholdInput.value = (s.threshold !== undefined) ? s.threshold : 0.5;
-  hourlyCheck.checked = !!s.hourly;
-  fiveMinCheck.checked = !!s.fiveMin;
+  applySettingsToForm(s);
   setStatus('연동됨 ✅ (Chat ID: ' + chatId + ')', 'ok');
 }
 
@@ -170,13 +184,26 @@ registerBtn.addEventListener('click', async () => {
     setStatus('Chat ID를 입력해주세요.', 'err');
     return;
   }
+
+  // 이미 등록된 Chat ID면 기존 설정을 그대로 불러오고, 폼의 기본값으로 덮어쓰지 않는다.
+  // (다른 기기에서 같은 Chat ID를 입력했을 때 설정이 초기화되는 걸 방지)
+  const checkRes = await fetch('/api/settings?chatId=' + encodeURIComponent(chatId));
+  const existing = await checkRes.json();
+
+  if (existing.registered) {
+    applySettingsToForm(existing);
+    setMyChatId(chatId);
+    setStatus('기존 설정을 불러왔습니다 ✅ (Chat ID: ' + chatId + ')', 'ok');
+    return;
+  }
+
   await fetch('/api/register', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ chatId, settings: currentFormSettings() })
   });
   setMyChatId(chatId);
-  setStatus('연동 완료 ✅ 텔레그램으로 알림을 받습니다.', 'ok');
+  setStatus('새로 연동 완료 ✅ 텔레그램으로 알림을 받습니다.', 'ok');
 });
 
 testBtn.addEventListener('click', async () => {
@@ -197,17 +224,42 @@ testBtn.addEventListener('click', async () => {
   }
 });
 
-async function loadRates(){
+function formatKstTime(utcString){
+  if (!utcString) return null;
+  const d = new Date(utcString);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+async function loadRates(manual){
+  if (manual) rateInfo.textContent = '새로고침 중...';
   try{
     const res = await fetch('/api/rates');
     const data = await res.json();
     usdRateEl.textContent = data.usdToKrw.toFixed(2) + ' 원';
     jpyRateEl.textContent = data.jpyToKrw.toFixed(2) + ' 원';
+
+    const checked = new Date().toLocaleTimeString('ko-KR', { hour:'2-digit', minute:'2-digit' });
+    let info = `방금 확인: ${checked}`;
+    if (data.source === 'naver') {
+      info += ' · 네이버 환율 위젯 기준 (수시로 갱신)';
+    } else {
+      const last = formatKstTime(data.lastUpdateUtc);
+      const next = formatKstTime(data.nextUpdateUtc);
+      info += ' · 대체 API 사용 중';
+      if (last) info += ` · 환율 데이터 갱신: ${last}`;
+      if (next) info += ` (다음 갱신 예정 ${next})`;
+      info += ' · 이 경우 하루 1회 정도만 갱신돼요';
+    }
+    rateInfo.textContent = info;
   }catch(e){
     usdRateEl.textContent = '조회 실패';
     jpyRateEl.textContent = '조회 실패';
+    rateInfo.textContent = '환율 조회에 실패했습니다.';
   }
 }
+
+refreshBtn.addEventListener('click', () => loadRates(true));
 
 // init
 loadSettings();
