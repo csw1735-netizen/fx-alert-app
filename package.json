@@ -1,12 +1,13 @@
 {
   "name": "fx-alert-app",
-  "version": "2.0.0",
-  "description": "USD/KRW, JPY/KRW 환율 알림 (Telegram Bot)",
+  "version": "3.0.0",
+  "description": "USD/KRW, JPY/KRW 환율 알림 (Telegram Bot + Upstash Redis)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "@upstash/redis": "^1.34.3",
     "express": "^4.19.2",
     "node-cron": "^3.0.3"
   },

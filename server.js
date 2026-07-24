@@ -17,23 +17,59 @@ const DEFAULT_SETTINGS = {
   fiveMin: false
 };
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(SUB_FILE)) fs.writeFileSync(SUB_FILE, '[]');
+// ---- 저장소: Upstash Redis(클라우드)가 설정되어 있으면 그걸 쓰고, 없으면 로컬 파일로 fallback ----
+// Render 무료 플랜은 재배포/재시작마다 로컬 파일이 초기화되기 때문에, 등록 정보를 재배포와
+// 무관하게 유지하려면 Upstash 같은 외부 저장소가 필요하다.
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const useCloudStore = !!(UPSTASH_URL && UPSTASH_TOKEN);
+const SUBS_KEY = 'fx_alert_subscribers';
 
-function readJSON(file) {
+let Redis, redis;
+if (useCloudStore) {
+  Redis = require('@upstash/redis').Redis;
+  redis = new Redis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
+  console.log('[저장소] Upstash Redis(클라우드)에 구독 정보를 저장합니다.');
+} else {
+  console.warn('[경고] UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN 이 없어 로컬 파일에 저장합니다. ' +
+    'Render 무료 플랜은 재배포 시 이 파일이 초기화되니, 영구 저장하려면 Upstash를 연결하세요.');
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(SUB_FILE)) fs.writeFileSync(SUB_FILE, '[]');
+}
+
+function readLocalJSON(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return null; }
 }
-function writeJSON(file, data) {
+function writeLocalJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
 // 구독자 목록: [{ chatId, settings: {...}, createdAt }]
-function readSubs() {
-  return readJSON(SUB_FILE) || [];
+async function readSubs() {
+  if (useCloudStore) {
+    try {
+      const data = await redis.get(SUBS_KEY);
+      return Array.isArray(data) ? data : [];
+    } catch (err) {
+      console.error('Upstash 읽기 실패:', err.message);
+      return [];
+    }
+  }
+  return readLocalJSON(SUB_FILE) || [];
 }
-function writeSubs(subs) {
-  writeJSON(SUB_FILE, subs);
+
+async function writeSubs(subs) {
+  if (useCloudStore) {
+    try {
+      await redis.set(SUBS_KEY, subs);
+    } catch (err) {
+      console.error('Upstash 쓰기 실패:', err.message);
+    }
+    return;
+  }
+  writeLocalJSON(SUB_FILE, subs);
 }
+
 function findSub(subs, chatId) {
   return subs.find(s => String(s.chatId) === String(chatId));
 }
@@ -71,10 +107,10 @@ async function sendTelegramMessage(chatId, text) {
 }
 
 // ---- API: 텔레그램 chatId 등록/설정 저장 ----
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
   const { chatId, settings } = req.body || {};
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
-  const subs = readSubs();
+  const subs = await readSubs();
   const existing = findSub(subs, chatId);
   if (existing) {
     existing.settings = { ...existing.settings, ...(settings || {}) };
@@ -85,36 +121,36 @@ app.post('/api/register', (req, res) => {
       createdAt: Date.now()
     });
   }
-  writeSubs(subs);
+  await writeSubs(subs);
   res.status(201).json({ ok: true });
 });
 
 // ---- API: 등록 해제 ----
-app.post('/api/unregister', (req, res) => {
+app.post('/api/unregister', async (req, res) => {
   const { chatId } = req.body || {};
-  let subs = readSubs();
+  let subs = await readSubs();
   subs = subs.filter(s => String(s.chatId) !== String(chatId));
-  writeSubs(subs);
+  await writeSubs(subs);
   res.json({ ok: true });
 });
 
 // ---- API: 개인 설정 조회/저장 (chatId 기준) ----
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', async (req, res) => {
   const { chatId } = req.query;
   if (!chatId) return res.json({ ...DEFAULT_SETTINGS, registered: false });
-  const subs = readSubs();
+  const subs = await readSubs();
   const sub = findSub(subs, chatId);
   res.json(sub ? { ...sub.settings, registered: true } : { ...DEFAULT_SETTINGS, registered: false });
 });
 
-app.post('/api/settings', (req, res) => {
+app.post('/api/settings', async (req, res) => {
   const { chatId, ...newSettings } = req.body || {};
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
-  const subs = readSubs();
+  const subs = await readSubs();
   const sub = findSub(subs, chatId);
   if (!sub) return res.status(404).json({ error: 'not registered. 먼저 텔레그램 연동을 완료하세요.' });
   sub.settings = { ...sub.settings, ...newSettings };
-  writeSubs(subs);
+  await writeSubs(subs);
   res.json(sub.settings);
 });
 
@@ -190,7 +226,7 @@ async function checkThresholdAndAlert() {
       const jpyDiff = jpyToKrw - baselineJpy;
       const jpyPct = (jpyDiff / baselineJpy) * 100;
 
-      const subs = readSubs();
+      const subs = await readSubs();
       const survivors = [];
       for (const s of subs) {
         const { unit, threshold } = s.settings || DEFAULT_SETTINGS;
@@ -215,7 +251,7 @@ async function checkThresholdAndAlert() {
         }
         if (keep) survivors.push(s);
       }
-      writeSubs(survivors);
+      await writeSubs(survivors);
     }
 
     baselineUsd = usdToKrw;
@@ -247,7 +283,7 @@ cron.schedule('* * * * *', async () => {
     jpyText = jpyToKrw.toFixed(2) + '원';
   } catch (e) { /* ignore */ }
 
-  const subs = readSubs();
+  const subs = await readSubs();
   const survivors = [];
   for (const s of subs) {
     const { hourly, fiveMin } = s.settings || DEFAULT_SETTINGS;
@@ -259,7 +295,7 @@ cron.schedule('* * * * *', async () => {
     }
     if (keep) survivors.push(s);
   }
-  writeSubs(survivors);
+  await writeSubs(survivors);
 });
 
 // ---- 현재 환율 조회 API (프론트 표시용) ----
@@ -272,10 +308,15 @@ app.get('/api/rates', async (req, res) => {
   }
 });
 
+// ---- 저장소 상태 확인 (디버그용) ----
+app.get('/api/storage-status', (req, res) => {
+  res.json({ cloud: useCloudStore });
+});
+
 // ---- 테스트 메시지 ----
 app.post('/api/test-notify', async (req, res) => {
   const { chatId } = req.body || {};
-  const subs = readSubs();
+  const subs = await readSubs();
   const sub = chatId ? findSub(subs, chatId) : null;
   if (!sub) return res.status(404).json({ error: 'not registered' });
   await sendTelegramMessage(sub.chatId, '✅ 테스트 메시지 - 텔레그램 알림이 정상 동작합니다.');
