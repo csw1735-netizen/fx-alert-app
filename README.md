@@ -39,13 +39,24 @@ Render 무료 플랜은 재배포할 때마다 서버의 로컬 파일이 초기
 2. 대시보드에서 "Create Database" 클릭
 3. 이름 아무거나 입력, Type은 "Regional", Region은 가까운 곳(도쿄 등) 선택 → 생성
 4. 생성된 데이터베이스 페이지에서 "REST API" 섹션 찾기 → 여기 두 값을 메모:
-   - UPSTASH_REDIS_REST_URL="https://steady-ocelot-176444.upstash.io"
-   - UPSTASH_REDIS_REST_TOKEN="gQAAAAAAArE8AAIgcDEwNDgwNjQ1ZjQ0ZDQ0MDFjOWE1OTc5OTUxYzA5NTZmOQ"
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
 
-## 4단계. Render 환경변수 설정
+## 4단계. 봇 도메인 등록 (Telegram Login Widget 필수 조건)
+
+로그인 위젯이 동작하려면 봇에 "이 도메인에서 로그인 위젯을 써도 된다"고 등록해줘야 합니다.
+
+1. `@BotFather` 대화에서 `/setdomain` 입력
+2. 내 봇 선택
+3. 배포된 도메인 입력 (https:// 빼고, 예: `fx-alert-app-4xfw.onrender.com`)
+
+## 5단계. Render 환경변수 설정
 
 Render 대시보드 → 서비스 선택 → Environment 탭에 아래 항목 추가:
 - `TELEGRAM_BOT_TOKEN` = 1단계에서 받은 토큰 값
+- `TELEGRAM_BOT_USERNAME` = 봇 사용자명 (`@` 빼고, 예: `my_fx_alert_bot`)
+- `SESSION_SECRET` = 아무 임의의 긴 문자열 (예: 32자 이상 랜덤 문자열. 로그인 세션 서명에 사용, 없으면
+  서버 재시작마다 로그인이 풀림)
 - `UPSTASH_REDIS_REST_URL` = 3단계에서 받은 URL
 - `UPSTASH_REDIS_REST_TOKEN` = 3단계에서 받은 토큰
 - 기존에 있던 `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY`는 더 이상 필요 없으니 삭제해도 됩니다.
@@ -54,22 +65,19 @@ Render 대시보드 → 서비스 선택 → Environment 탭에 아래 항목 �
 `{"cloud":true}`가 나오면 클라우드 저장이 정상적으로 연결된 것입니다. (Upstash를 설정하지 않아도
 앱은 동작하지만, 그 경우 재배포할 때마다 등록 정보가 초기화됩니다.)
 
-## 5단계. 내 Chat ID 확인하기
-
-1. 텔레그램에서 1단계에서 만든 내 봇을 검색해서 대화 시작
-2. 봇에게 아무 메시지나 하나 보내기 (예: "안녕")
-3. 브라우저에서 아래 주소 접속 (토큰 부분만 본인 것으로 교체):
-   ```
-   https://api.telegram.org/bot<내토큰>/getUpdates
-   ```
-4. 결과 JSON에서 `"chat":{"id":123456789, ...}` 부분의 숫자를 찾으면 그게 내 Chat ID
-
-## 6단계. 웹앱에서 연동
+## 6단계. 로그인해서 사용하기
 
 1. 배포된 URL 접속
-2. "내 Chat ID" 칸에 4단계에서 찾은 숫자 입력 → "연동/저장" 클릭
-3. 변동 기준(%나 원), 정기 알림(정각/5분) 설정
-4. "테스트 메시지 보내기"로 정상 수신 확인
+2. "Log in with Telegram" 버튼 클릭 → 텔레그램 로그인 승인
+3. 로그인되면 자동으로 내 계정에 연결됨 (Chat ID를 직접 찾을 필요 없음)
+4. 변동 기준(%나 원), 정기 알림(정각/5분) 설정 — 저장은 자동으로 됨
+5. "테스트 메시지 보내기"로 정상 수신 확인
+
+로그인은 텔레그램이 서명으로 본인 확인을 해주기 때문에, 다른 사람이 내 Chat ID를 안다고 해도 내 설정을
+바꿀 수 없습니다. 어느 기기에서 로그인하든 항상 내 계정 설정 그대로 불러와집니다.
+
+봇과 아직 대화를 시작한 적이 없다면 "테스트 메시지 보내기"가 실패할 수 있습니다 — 텔레그램에서 내 봇을
+검색해 아무 메시지나 한 번 보낸 뒤 다시 시도하세요.
 
 이후로는 텔레그램 앱만 설치되어 있으면 폰이 잠자기 상태여도 알림이 옵니다.
 

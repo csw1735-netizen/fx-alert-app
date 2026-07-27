@@ -1,10 +1,23 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const cron = require('node-cron');
 
 const app = express();
 app.use(express.json());
+
+// index.html은 봇 사용자명을 서버가 주입해서 내려준다 (Telegram Login Widget에 필요).
+const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || '';
+app.get('/', (req, res) => {
+  try {
+    let html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+    html = html.replace('__BOT_USERNAME__', TELEGRAM_BOT_USERNAME);
+    res.set('Content-Type', 'text/html; charset=utf-8').send(html);
+  } catch (err) {
+    res.status(500).send('index.html not found');
+  }
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 const DATA_DIR = path.join(__dirname, 'data');
@@ -82,6 +95,75 @@ if (!telegramReady) {
     '@BotFather 에서 봇을 만들고 토큰을 환경변수로 설정하세요. 토큰이 없으면 알림이 전송되지 않습니다.');
 }
 
+// ---- 로그인 세션(쿠키) ----
+// SESSION_SECRET 이 없으면 서버 재시작할 때마다 무작위 값을 새로 만든다 -> 재시작 시 기존 로그인은
+// 풀리지만(다시 로그인하면 됨), 최소한 서명 위조는 항상 방지된다.
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.SESSION_SECRET) {
+  console.warn('[경고] SESSION_SECRET 환경변수가 없어 임시 값을 사용합니다. 서버 재시작 시 로그인이 풀립니다. ' +
+    '고정하려면 SESSION_SECRET 환경변수에 임의의 긴 문자열을 넣어주세요.');
+}
+const SESSION_COOKIE = 'fx_session';
+const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30일
+
+function signValue(value) {
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
+  return `${value}.${sig}`;
+}
+function verifySignedValue(signed) {
+  if (!signed) return null;
+  const idx = signed.lastIndexOf('.');
+  if (idx === -1) return null;
+  const value = signed.slice(0, idx);
+  const sig = signed.slice(idx + 1);
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
+  const sigBuf = Buffer.from(sig, 'hex');
+  const expBuf = Buffer.from(expected, 'hex');
+  if (sigBuf.length !== expBuf.length) return null;
+  return crypto.timingSafeEqual(sigBuf, expBuf) ? value : null;
+}
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const cookies = {};
+  if (!header) return cookies;
+  header.split(';').forEach(pair => {
+    const idx = pair.indexOf('=');
+    if (idx === -1) return;
+    cookies[pair.slice(0, idx).trim()] = decodeURIComponent(pair.slice(idx + 1).trim());
+  });
+  return cookies;
+}
+function getAuthedChatId(req) {
+  const cookies = parseCookies(req);
+  return verifySignedValue(cookies[SESSION_COOKIE]);
+}
+function setSessionCookie(res, chatId) {
+  const signed = encodeURIComponent(signValue(chatId));
+  res.setHeader('Set-Cookie',
+    `${SESSION_COOKIE}=${signed}; HttpOnly; Path=/; Max-Age=${SESSION_MAX_AGE_SEC}; SameSite=Lax`);
+}
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
+}
+
+// ---- Telegram Login Widget 검증 ----
+// https://core.telegram.org/widgets/login#checking-authorization
+function verifyTelegramAuth(data, botToken) {
+  const { hash, ...rest } = data;
+  if (!hash) return false;
+  const checkString = Object.keys(rest)
+    .filter(k => rest[k] !== undefined && rest[k] !== null)
+    .sort()
+    .map(k => `${k}=${rest[k]}`)
+    .join('\n');
+  const secretKey = crypto.createHash('sha256').update(botToken).digest();
+  const hmac = crypto.createHmac('sha256', secretKey).update(checkString).digest('hex');
+  const hmacBuf = Buffer.from(hmac, 'hex');
+  const hashBuf = Buffer.from(String(hash), 'hex');
+  if (hmacBuf.length !== hashBuf.length) return false;
+  return crypto.timingSafeEqual(hmacBuf, hashBuf);
+}
+
 async function sendTelegramMessage(chatId, text) {
   if (!telegramReady) {
     console.warn('TELEGRAM_BOT_TOKEN 미설정으로 메시지 전송 생략');
@@ -106,49 +188,72 @@ async function sendTelegramMessage(chatId, text) {
   }
 }
 
-// ---- API: 텔레그램 chatId 등록/설정 저장 ----
-app.post('/api/register', async (req, res) => {
-  const { chatId, settings } = req.body || {};
-  if (!chatId) return res.status(400).json({ error: 'chatId required' });
-  const subs = await readSubs();
-  const existing = findSub(subs, chatId);
-  if (existing) {
-    existing.settings = { ...existing.settings, ...(settings || {}) };
-  } else {
-    subs.push({
-      chatId: String(chatId),
-      settings: { ...DEFAULT_SETTINGS, ...(settings || {}) },
-      createdAt: Date.now()
-    });
+// ---- API: 텔레그램 로그인 위젯 콜백 ----
+// 프론트에서 Telegram Login Widget이 인증한 사용자 데이터(서명 포함)를 그대로 전달받아 검증한다.
+app.post('/api/telegram-login', async (req, res) => {
+  if (!telegramReady) return res.status(500).json({ error: 'bot token not configured' });
+  const data = req.body || {};
+  if (!verifyTelegramAuth(data, TELEGRAM_BOT_TOKEN)) {
+    return res.status(401).json({ error: '텔레그램 인증 검증에 실패했습니다.' });
   }
-  await writeSubs(subs);
-  res.status(201).json({ ok: true });
+  const authDate = Number(data.auth_date);
+  const now = Math.floor(Date.now() / 1000);
+  if (!authDate || now - authDate > 86400) {
+    return res.status(401).json({ error: '인증 정보가 만료되었습니다. 다시 로그인해주세요.' });
+  }
+
+  const chatId = String(data.id);
+  const subs = await readSubs();
+  let sub = findSub(subs, chatId);
+  if (!sub) {
+    sub = { chatId, settings: { ...DEFAULT_SETTINGS }, createdAt: Date.now() };
+    subs.push(sub);
+    await writeSubs(subs);
+  }
+
+  setSessionCookie(res, chatId);
+  res.json({ ok: true, chatId, firstName: data.first_name || '' });
 });
 
-// ---- API: 등록 해제 ----
-app.post('/api/unregister', async (req, res) => {
-  const { chatId } = req.body || {};
-  let subs = await readSubs();
-  subs = subs.filter(s => String(s.chatId) !== String(chatId));
-  await writeSubs(subs);
+// ---- API: 로그아웃 ----
+app.post('/api/logout', (req, res) => {
+  clearSessionCookie(res);
   res.json({ ok: true });
 });
 
-// ---- API: 개인 설정 조회/저장 (chatId 기준) ----
+// ---- API: 로그인 상태 확인 ----
+app.get('/api/me', (req, res) => {
+  const chatId = getAuthedChatId(req);
+  res.json({ chatId });
+});
+
+// ---- API: 등록 해제(계정 삭제) ----
+app.post('/api/unregister', async (req, res) => {
+  const chatId = getAuthedChatId(req);
+  if (!chatId) return res.status(401).json({ error: 'not logged in' });
+  let subs = await readSubs();
+  subs = subs.filter(s => String(s.chatId) !== String(chatId));
+  await writeSubs(subs);
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+// ---- API: 개인 설정 조회/저장 (로그인 세션 기준) ----
 app.get('/api/settings', async (req, res) => {
-  const { chatId } = req.query;
-  if (!chatId) return res.json({ ...DEFAULT_SETTINGS, registered: false });
+  const chatId = getAuthedChatId(req);
+  if (!chatId) return res.status(401).json({ error: 'not logged in' });
   const subs = await readSubs();
   const sub = findSub(subs, chatId);
-  res.json(sub ? { ...sub.settings, registered: true } : { ...DEFAULT_SETTINGS, registered: false });
+  res.json(sub ? sub.settings : DEFAULT_SETTINGS);
 });
 
 app.post('/api/settings', async (req, res) => {
-  const { chatId, ...newSettings } = req.body || {};
-  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  const chatId = getAuthedChatId(req);
+  if (!chatId) return res.status(401).json({ error: 'not logged in' });
+  const newSettings = req.body || {};
   const subs = await readSubs();
   const sub = findSub(subs, chatId);
-  if (!sub) return res.status(404).json({ error: 'not registered. 먼저 텔레그램 연동을 완료하세요.' });
+  if (!sub) return res.status(404).json({ error: 'not registered' });
   sub.settings = { ...sub.settings, ...newSettings };
   await writeSubs(subs);
   res.json(sub.settings);
@@ -315,9 +420,10 @@ app.get('/api/storage-status', (req, res) => {
 
 // ---- 테스트 메시지 ----
 app.post('/api/test-notify', async (req, res) => {
-  const { chatId } = req.body || {};
+  const chatId = getAuthedChatId(req);
+  if (!chatId) return res.status(401).json({ error: 'not logged in' });
   const subs = await readSubs();
-  const sub = chatId ? findSub(subs, chatId) : null;
+  const sub = findSub(subs, chatId);
   if (!sub) return res.status(404).json({ error: 'not registered' });
   await sendTelegramMessage(sub.chatId, '✅ 테스트 메시지 - 텔레그램 알림이 정상 동작합니다.');
   res.json({ ok: true });

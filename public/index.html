@@ -71,21 +71,18 @@
   </div>
 
   <div class="panel">
-    <h2>1️⃣ 텔레그램 연동</h2>
+    <h2>1️⃣ 텔레그램 로그인</h2>
     <div class="steps">
-      1. 텔레그램에서 이 봇을 검색해 대화 시작: <b id="botHint">배포자가 알려준 봇 이름</b><br>
-      2. 봇에게아무 메시지나 하나 보내기 (예: "시작")<br>
-      3. 아래 안내(README)에 있는 방법으로 내 <b>Chat ID</b> 확인 후 입력<br>
-      4. 이미 다른 기기에서 연동한 적 있는 Chat ID라면, 같은 값을 입력하고 버튼을 누르면 그 설정을 그대로 불러옵니다.<br>
+      아래 버튼으로 텔레그램 로그인하면 본인 계정으로만 설정을 제어할 수 있어요. 어느 기기에서 로그인하든
+      항상 내 설정 그대로 불러와집니다.
     </div>
-    <div class="row" style="margin-top:10px;">
-      <label>내 Chat ID
-        <input type="text" id="chatIdInput" placeholder="예: 123456789">
-      </label>
-      <button id="registerBtn">연동/불러오기</button>
+    <div class="row" id="loginWidgetRow" style="margin-top:10px;"></div>
+    <div class="row" id="loggedInRow" style="display:none;">
+      <span id="whoAmI" style="font-size:13px;color:var(--text);"></span>
       <button class="secondary" id="testBtn">테스트 메시지 보내기</button>
+      <button class="secondary" id="logoutBtn">로그아웃</button>
     </div>
-    <div class="status" id="statusLine">아직 연동 안 됨</div>
+    <div class="status" id="statusLine">로그인 필요</div>
   </div>
 
   <div class="panel">
@@ -112,7 +109,7 @@
     </div>
   </div>
 
-  <div class="footer">설정은 이 브라우저에 저장된 Chat ID 기준으로 서버에 저장됩니다. 사람마다 Chat ID가 다르므로 각자 원하는 기준으로 따로 설정할 수 있어요.</div>
+  <div class="footer">텔레그램 로그인으로 본인 인증된 사용자만 자신의 설정을 바꿀 수 있어요. 다른 사람의 알림 설정은 볼 수도 바꿀 수도 없습니다.</div>
 </div>
 
 <script>
@@ -123,22 +120,17 @@ const unitSelect = document.getElementById('unitSelect');
 const thresholdInput = document.getElementById('thresholdInput');
 const hourlyCheck = document.getElementById('hourlyCheck');
 const fiveMinCheck = document.getElementById('fiveMinCheck');
-const chatIdInput = document.getElementById('chatIdInput');
-const registerBtn = document.getElementById('registerBtn');
 const testBtn = document.getElementById('testBtn');
+const logoutBtn = document.getElementById('logoutBtn');
 const refreshBtn = document.getElementById('refreshBtn');
 const rateInfo = document.getElementById('rateInfo');
+const loginWidgetRow = document.getElementById('loginWidgetRow');
+const loggedInRow = document.getElementById('loggedInRow');
+const whoAmI = document.getElementById('whoAmI');
 
 function setStatus(msg, cls){
   statusLine.textContent = msg;
   statusLine.className = 'status ' + (cls || '');
-}
-
-function getMyChatId(){
-  return localStorage.getItem('fxTelegramChatId');
-}
-function setMyChatId(id){
-  localStorage.setItem('fxTelegramChatId', id);
 }
 
 function currentFormSettings(){
@@ -157,71 +149,85 @@ function applySettingsToForm(s){
   fiveMinCheck.checked = !!s.fiveMin;
 }
 
+function showLoggedOutUI(){
+  loginWidgetRow.style.display = '';
+  loggedInRow.style.display = 'none';
+  setStatus('로그인 필요', '');
+}
+
+function showLoggedInUI(name){
+  loginWidgetRow.style.display = 'none';
+  loggedInRow.style.display = '';
+  whoAmI.textContent = name ? `${name}님으로 로그인됨` : '로그인됨';
+  setStatus('로그인됨 ✅', 'ok');
+}
+
 async function loadSettings(){
-  const chatId = getMyChatId();
-  if (!chatId) return;
-  chatIdInput.value = chatId;
-  const res = await fetch('/api/settings?chatId=' + encodeURIComponent(chatId));
+  const res = await fetch('/api/settings', { credentials: 'same-origin' });
+  if (!res.ok) { showLoggedOutUI(); return; }
   const s = await res.json();
   applySettingsToForm(s);
-  setStatus('연동됨 ✅ (Chat ID: ' + chatId + ')', 'ok');
 }
 
 async function saveSettings(){
-  const chatId = getMyChatId();
-  if (!chatId) return;
   await fetch('/api/settings', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ chatId, ...currentFormSettings() })
+    body: JSON.stringify(currentFormSettings())
   });
 }
 [unitSelect, thresholdInput, hourlyCheck, fiveMinCheck].forEach(el => el.addEventListener('change', saveSettings));
 
-registerBtn.addEventListener('click', async () => {
-  const chatId = chatIdInput.value.trim();
-  if (!chatId) {
-    setStatus('Chat ID를 입력해주세요.', 'err');
+// Telegram Login Widget 콜백 (전역 함수, 위젯 스크립트가 로그인 성공 시 호출)
+window.onTelegramAuth = async function(user) {
+  try {
+    const res = await fetch('/api/telegram-login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(user)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setStatus('로그인 실패: ' + (err.error || '알 수 없는 오류'), 'err');
+      return;
+    }
+    const data = await res.json();
+    showLoggedInUI(data.firstName);
+    await loadSettings();
+  } catch (e) {
+    setStatus('로그인 중 오류가 발생했습니다.', 'err');
+  }
+};
+
+function renderLoginWidget(botUsername){
+  if (!botUsername) {
+    loginWidgetRow.textContent = '봇 사용자명이 설정되지 않았습니다 (TELEGRAM_BOT_USERNAME 환경변수 필요).';
     return;
   }
-
-  // 이미 등록된 Chat ID면 기존 설정을 그대로 불러오고, 폼의 기본값으로 덮어쓰지 않는다.
-  // (다른 기기에서 같은 Chat ID를 입력했을 때 설정이 초기화되는 걸 방지)
-  const checkRes = await fetch('/api/settings?chatId=' + encodeURIComponent(chatId));
-  const existing = await checkRes.json();
-
-  if (existing.registered) {
-    applySettingsToForm(existing);
-    setMyChatId(chatId);
-    setStatus('기존 설정을 불러왔습니다 ✅ (Chat ID: ' + chatId + ')', 'ok');
-    return;
-  }
-
-  await fetch('/api/register', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ chatId, settings: currentFormSettings() })
-  });
-  setMyChatId(chatId);
-  setStatus('새로 연동 완료 ✅ 텔레그램으로 알림을 받습니다.', 'ok');
-});
+  const s = document.createElement('script');
+  s.src = 'https://telegram.org/js/telegram-widget.js?22';
+  s.async = true;
+  s.setAttribute('data-telegram-login', botUsername);
+  s.setAttribute('data-size', 'large');
+  s.setAttribute('data-onauth', 'onTelegramAuth(user)');
+  s.setAttribute('data-request-access', 'write');
+  loginWidgetRow.appendChild(s);
+}
 
 testBtn.addEventListener('click', async () => {
-  const chatId = getMyChatId();
-  if (!chatId) {
-    setStatus('먼저 연동/저장을 눌러주세요.', 'err');
-    return;
-  }
-  const res = await fetch('/api/test-notify', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ chatId })
-  });
+  const res = await fetch('/api/test-notify', { method: 'POST', credentials: 'same-origin' });
   if (res.ok) {
     setStatus('테스트 메시지를 전송했습니다. 텔레그램을 확인해보세요.', 'ok');
   } else {
-    setStatus('전송 실패. Chat ID가 맞는지 확인해주세요.', 'err');
+    setStatus('전송 실패. 봇과 먼저 대화를 시작했는지 확인해주세요.', 'err');
   }
+});
+
+logoutBtn.addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  showLoggedOutUI();
 });
 
 function formatKstTime(utcString){
@@ -262,7 +268,19 @@ async function loadRates(manual){
 refreshBtn.addEventListener('click', () => loadRates(true));
 
 // init
-loadSettings();
+renderLoginWidget('__BOT_USERNAME__');
+fetch('/api/me', { credentials: 'same-origin' })
+  .then(r => r.json())
+  .then(async (data) => {
+    if (data.chatId) {
+      showLoggedInUI();
+      await loadSettings();
+    } else {
+      showLoggedOutUI();
+    }
+  })
+  .catch(() => showLoggedOutUI());
+
 loadRates();
 setInterval(loadRates, 60 * 1000);
 </script>
