@@ -370,15 +370,25 @@ async function checkThresholdAndAlert() {
 cron.schedule('*/5 * * * *', checkThresholdAndAlert);
 checkThresholdAndAlert(); // 서버 시작 시 1회 baseline 설정
 
+// 서버가 어느 타임존에서 돌든(Render는 보통 UTC) 한국 시간 기준으로 정확히 판단하기 위한 헬퍼
+function getKstHour(date) {
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul', hour: '2-digit', hour12: false
+  }).format(date));
+}
+
 // 매분 스케줄 알림 체크 (정각 / 5분 단위, 구독자별 on/off)
+// 정기 알림은 한국 시간 06:00~23:59 사이에만 보낸다 (00:00~05:59는 조용한 시간대로 건너뜀)
 cron.schedule('* * * * *', async () => {
   const now = new Date();
   const minutes = now.getMinutes();
-  const timeStr = now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const kstHour = getKstHour(now);
+  const timeStr = now.toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false });
 
   const isHourMark = minutes === 0;
   const isFiveMark = minutes % 5 === 0;
   if (!isFiveMark) return;
+  if (kstHour < 6) return; // 00:00~05:59 KST: 정기 알림(정각/5분) 건너뜀
 
   let usdText = '--';
   let jpyText = '--';
