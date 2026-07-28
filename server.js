@@ -6,18 +6,6 @@ const cron = require('node-cron');
 
 const app = express();
 app.use(express.json());
-
-// index.html은 봇 사용자명을 서버가 주입해서 내려준다 (Telegram Login Widget에 필요).
-const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || '';
-app.get('/', (req, res) => {
-  try {
-    let html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
-    html = html.replace('__BOT_USERNAME__', TELEGRAM_BOT_USERNAME);
-    res.set('Content-Type', 'text/html; charset=utf-8').send(html);
-  } catch (err) {
-    res.status(500).send('index.html not found');
-  }
-});
 app.use(express.static(path.join(__dirname, 'public')));
 
 const DATA_DIR = path.join(__dirname, 'data');
@@ -147,22 +135,47 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
 }
 
-// ---- Telegram Login Widget 검증 ----
-// https://core.telegram.org/widgets/login#checking-authorization
-function verifyTelegramAuth(data, botToken) {
-  const { hash, ...rest } = data;
-  if (!hash) return false;
-  const checkString = Object.keys(rest)
-    .filter(k => rest[k] !== undefined && rest[k] !== null)
-    .sort()
-    .map(k => `${k}=${rest[k]}`)
-    .join('\n');
-  const secretKey = crypto.createHash('sha256').update(botToken).digest();
-  const hmac = crypto.createHmac('sha256', secretKey).update(checkString).digest('hex');
-  const hmacBuf = Buffer.from(hmac, 'hex');
-  const hashBuf = Buffer.from(String(hash), 'hex');
-  if (hmacBuf.length !== hashBuf.length) return false;
-  return crypto.timingSafeEqual(hmacBuf, hashBuf);
+// ---- PIN 해시 (scrypt, 추가 의존성 없이 Node 내장 crypto만 사용) ----
+function hashPin(pin, salt) {
+  return crypto.scryptSync(String(pin), salt, 32).toString('hex');
+}
+function makePinRecord(pin) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return { salt, hash: hashPin(pin, salt) };
+}
+function verifyPin(pin, record) {
+  if (!record || !record.salt || !record.hash) return false;
+  const hash = hashPin(pin, record.salt);
+  const a = Buffer.from(hash, 'hex');
+  const b = Buffer.from(record.hash, 'hex');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+function isValidPinFormat(pin) {
+  return typeof pin === 'string' && /^[0-9]{4,8}$/.test(pin);
+}
+
+// ---- 간단한 로그인 시도 제한 (브루트포스 방지, 메모리 기반) ----
+const loginAttempts = new Map(); // chatId -> { count, resetAt }
+const MAX_ATTEMPTS = 10;
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000; // 15분
+
+function isRateLimited(chatId) {
+  const rec = loginAttempts.get(chatId);
+  if (!rec) return false;
+  if (Date.now() > rec.resetAt) { loginAttempts.delete(chatId); return false; }
+  return rec.count >= MAX_ATTEMPTS;
+}
+function recordFailedAttempt(chatId) {
+  const rec = loginAttempts.get(chatId);
+  if (!rec || Date.now() > rec.resetAt) {
+    loginAttempts.set(chatId, { count: 1, resetAt: Date.now() + ATTEMPT_WINDOW_MS });
+  } else {
+    rec.count += 1;
+  }
+}
+function clearFailedAttempts(chatId) {
+  loginAttempts.delete(chatId);
 }
 
 async function sendTelegramMessage(chatId, text) {
@@ -189,31 +202,50 @@ async function sendTelegramMessage(chatId, text) {
   }
 }
 
-// ---- API: 텔레그램 로그인 위젯 콜백 ----
-// 프론트에서 Telegram Login Widget이 인증한 사용자 데이터(서명 포함)를 그대로 전달받아 검증한다.
-app.post('/api/telegram-login', async (req, res) => {
-  if (!telegramReady) return res.status(500).json({ error: 'bot token not configured' });
-  const data = req.body || {};
-  if (!verifyTelegramAuth(data, TELEGRAM_BOT_TOKEN)) {
-    return res.status(401).json({ error: '텔레그램 인증 검증에 실패했습니다.' });
-  }
-  const authDate = Number(data.auth_date);
-  const now = Math.floor(Date.now() / 1000);
-  if (!authDate || now - authDate > 86400) {
-    return res.status(401).json({ error: '인증 정보가 만료되었습니다. 다시 로그인해주세요.' });
+// ---- API: Chat ID + PIN 로그인 ----
+// 처음 연동하는 chatId면 이 PIN을 새로 등록하고, 이미 있는 chatId면 PIN이 일치해야 로그인된다.
+// (예전 방식으로 이미 등록됐지만 PIN이 없는 계정은, 처음 로그인 시도할 때 입력한 PIN을 그대로 등록해준다.)
+app.post('/api/pin-login', async (req, res) => {
+  const { chatId: rawChatId, pin } = req.body || {};
+  if (!rawChatId) return res.status(400).json({ error: 'chatId required' });
+  if (!isValidPinFormat(pin)) return res.status(400).json({ error: 'PIN은 4~8자리 숫자여야 합니다.' });
+
+  const chatId = String(rawChatId).trim();
+
+  if (isRateLimited(chatId)) {
+    return res.status(429).json({ error: '시도 횟수를 초과했습니다. 15분 후 다시 시도해주세요.' });
   }
 
-  const chatId = String(data.id);
   const subs = await readSubs();
   let sub = findSub(subs, chatId);
+
   if (!sub) {
-    sub = { chatId, settings: { ...DEFAULT_SETTINGS }, createdAt: Date.now() };
+    // 신규 등록: 이 PIN을 앞으로 쓸 비밀번호로 저장
+    sub = { chatId, settings: { ...DEFAULT_SETTINGS }, pin: makePinRecord(pin), createdAt: Date.now() };
     subs.push(sub);
     await writeSubs(subs);
+    clearFailedAttempts(chatId);
+    setSessionCookie(res, chatId);
+    return res.status(201).json({ ok: true, chatId, created: true });
   }
 
+  if (!sub.pin) {
+    // 예전 방식으로 등록됐던 계정: 지금 입력한 PIN을 새로 등록
+    sub.pin = makePinRecord(pin);
+    await writeSubs(subs);
+    clearFailedAttempts(chatId);
+    setSessionCookie(res, chatId);
+    return res.json({ ok: true, chatId, migrated: true });
+  }
+
+  if (!verifyPin(pin, sub.pin)) {
+    recordFailedAttempt(chatId);
+    return res.status(401).json({ error: 'PIN이 일치하지 않습니다.' });
+  }
+
+  clearFailedAttempts(chatId);
   setSessionCookie(res, chatId);
-  res.json({ ok: true, chatId, firstName: data.first_name || '' });
+  res.json({ ok: true, chatId });
 });
 
 // ---- API: 로그아웃 ----
