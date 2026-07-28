@@ -27,7 +27,8 @@ const DEFAULT_SETTINGS = {
   unit: 'percent',
   threshold: 0.5,
   hourly: false,
-  fiveMin: false
+  fiveMin: false,
+  weekendOff: false
 };
 
 // ---- 저장소: Upstash Redis(클라우드)가 설정되어 있으면 그걸 쓰고, 없으면 로컬 파일로 fallback ----
@@ -324,6 +325,7 @@ async function fetchRates() {
 async function checkThresholdAndAlert() {
   try {
     const { usdToKrw, jpyToKrw } = await fetchRates();
+    const weekendNow = isKstWeekend(new Date());
 
     if (baselineUsd !== null && baselineJpy !== null) {
       const usdDiff = usdToKrw - baselineUsd;
@@ -334,11 +336,11 @@ async function checkThresholdAndAlert() {
       const subs = await readSubs();
       const survivors = [];
       for (const s of subs) {
-        const { unit, threshold } = s.settings || DEFAULT_SETTINGS;
+        const { unit, threshold, weekendOff } = s.settings || DEFAULT_SETTINGS;
         const th = parseFloat(threshold) || 0;
         let keep = true;
 
-        if (th > 0) {
+        if (th > 0 && !(weekendOff && weekendNow)) {
           const usdExceeded = unit === 'percent' ? Math.abs(usdPct) >= th : Math.abs(usdDiff) >= th;
           if (usdExceeded) {
             keep = await sendTelegramMessage(s.chatId,
@@ -376,6 +378,10 @@ function getKstHour(date) {
     timeZone: 'Asia/Seoul', hour: '2-digit', hour12: false
   }).format(date));
 }
+function isKstWeekend(date) {
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', weekday: 'short' }).format(date);
+  return weekday === 'Sat' || weekday === 'Sun';
+}
 
 // 매분 스케줄 알림 체크 (정각 / 5분 단위, 구독자별 on/off)
 // 정기 알림은 한국 시간 06:00~23:59 사이에만 보낸다 (00:00~05:59는 조용한 시간대로 건너뜀)
@@ -389,6 +395,7 @@ cron.schedule('* * * * *', async () => {
   const isFiveMark = minutes % 5 === 0;
   if (!isFiveMark) return;
   if (kstHour < 6) return; // 00:00~05:59 KST: 정기 알림(정각/5분) 건너뜀
+  const weekendNow = isKstWeekend(now);
 
   let usdText = '--';
   let jpyText = '--';
@@ -401,8 +408,12 @@ cron.schedule('* * * * *', async () => {
   const subs = await readSubs();
   const survivors = [];
   for (const s of subs) {
-    const { hourly, fiveMin } = s.settings || DEFAULT_SETTINGS;
+    const { hourly, fiveMin, weekendOff } = s.settings || DEFAULT_SETTINGS;
     let keep = true;
+    if (weekendOff && weekendNow) {
+      survivors.push(s);
+      continue; // 주말 알림 끄기: 이 구독자는 건너뜀
+    }
     if (isHourMark && hourly) {
       keep = await sendTelegramMessage(s.chatId, `⏰ 정시 환율 알림\n${timeStr} · USD/KRW ${usdText} · JPY100/KRW ${jpyText}`);
     } else if (fiveMin) {

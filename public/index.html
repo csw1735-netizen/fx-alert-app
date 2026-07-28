@@ -107,6 +107,10 @@
       <label><input type="checkbox" id="hourlyCheck"> 매시 정각 알림</label>
       <label><input type="checkbox" id="fiveMinCheck"> 5분 단위 알림</label>
     </div>
+    <div class="row">
+      <label><input type="checkbox" id="weekendOffCheck"> 주말(토·일)에는 알림 받지 않기</label>
+    </div>
+    <span style="font-size:12px;color:var(--muted)">정기 알림은 한국시간 06:00~23:59에만 오며, 이 옵션을 켜면 변동 알림도 주말엔 오지 않아요.</span>
   </div>
 
   <div class="footer">텔레그램 로그인으로 본인 인증된 사용자만 자신의 설정을 바꿀 수 있어요. 다른 사람의 알림 설정은 볼 수도 바꿀 수도 없습니다.</div>
@@ -120,6 +124,7 @@ const unitSelect = document.getElementById('unitSelect');
 const thresholdInput = document.getElementById('thresholdInput');
 const hourlyCheck = document.getElementById('hourlyCheck');
 const fiveMinCheck = document.getElementById('fiveMinCheck');
+const weekendOffCheck = document.getElementById('weekendOffCheck');
 const testBtn = document.getElementById('testBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const refreshBtn = document.getElementById('refreshBtn');
@@ -138,7 +143,8 @@ function currentFormSettings(){
     unit: unitSelect.value,
     threshold: parseFloat(thresholdInput.value) || 0,
     hourly: hourlyCheck.checked,
-    fiveMin: fiveMinCheck.checked
+    fiveMin: fiveMinCheck.checked,
+    weekendOff: weekendOffCheck.checked
   };
 }
 
@@ -147,6 +153,7 @@ function applySettingsToForm(s){
   thresholdInput.value = (s.threshold !== undefined) ? s.threshold : 0.5;
   hourlyCheck.checked = !!s.hourly;
   fiveMinCheck.checked = !!s.fiveMin;
+  weekendOffCheck.checked = !!s.weekendOff;
 }
 
 function showLoggedOutUI(){
@@ -177,7 +184,7 @@ async function saveSettings(){
     body: JSON.stringify(currentFormSettings())
   });
 }
-[unitSelect, thresholdInput, hourlyCheck, fiveMinCheck].forEach(el => el.addEventListener('change', saveSettings));
+[unitSelect, thresholdInput, hourlyCheck, fiveMinCheck, weekendOffCheck].forEach(el => el.addEventListener('change', saveSettings));
 
 // Telegram Login Widget 콜백 (전역 함수, 위젯 스크립트가 로그인 성공 시 호출)
 window.onTelegramAuth = async function(user) {
